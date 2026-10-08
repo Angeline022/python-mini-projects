@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gesture Earth</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;background:#02030a;overflow:hidden;font-family:system-ui,sans-serif;color:#cfe3ff}
+  #c{position:fixed;inset:0;width:100%;height:100%}
+  #hud{position:fixed;top:14px;left:14px;font-size:13px;line-height:1.6;background:#0b1226cc;padding:10px 14px;border-radius:10px;max-width:290px}
+  #hud b{color:#7fd1ff}
+  #label{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);font-size:26px;font-weight:600;letter-spacing:.04em;text-shadow:0 0 12px #000}
+  #cam{position:fixed;bottom:14px;right:14px;width:200px;height:150px;border-radius:10px;overflow:hidden;border:1px solid #2a3a66;background:#000}
+  #cam video,#cam canvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1);object-fit:cover}
+  #cursor{position:fixed;width:22px;height:22px;margin:-11px 0 0 -11px;border:2px solid #7fd1ff;border-radius:50%;pointer-events:none;display:none;transition:background .1s}
+  #cursor.down{background:#7fd1ff88}
+  #status{position:fixed;top:14px;right:14px;font-size:12px;opacity:.7}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <b>Gesture Earth</b><br>
+  ✋ <b>Rotate</b>: open palm, move it like turning a globe<br>
+  🤲 <b>Zoom</b>: two hands, move them apart / together<br>
+  🤏 <b>Select</b>: aim with your index fingertip, pinch thumb+index<br>
+  <span style="opacity:.6">Mouse works too: drag, scroll, click.</span>
+</div>
+<div id="status">loading…</div>
+<div id="label"></div>
+<div id="cursor"></div>
+<div id="cam"><video id="vid" playsinline muted></video><canvas id="ov" width="320" height="240"></canvas></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $('status'), labelEl = $('label'), cursorEl = $('cursor');
+
+// ---------- Three.js scene ----------
+const renderer = new THREE.WebGLRenderer({canvas: $('c'), antialias: true});
+renderer.setPixelRatio(devicePixelRatio);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+let targetZ = 3.6; camera.position.z = targetZ;
+scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+const sun = new THREE.DirectionalLight(0xffffff, 0.8); sun.position.set(5, 3, 5); scene.add(sun);
+
+// stars
+{ const g = new THREE.BufferGeometry(), p = [];
+  for (let i = 0; i < 1500; i++) { const v = new THREE.Vector3().randomDirection ? null : null;
+    const r = 40, t = Math.random()*Math.PI*2, u = Math.random()*2-1, s = Math.sqrt(1-u*u);
+    p.push(r*s*Math.cos(t), r*u, r*s*Math.sin(t)); }
+  g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({color: 0xffffff, size: 0.08}))); }
+
+// Earth texture drawn from country polygons (no image downloads needed)
+const W = 2048, H = 1024;
+const mapCanvas = document.createElement('canvas'); mapCanvas.width = W; mapCanvas.height = H;
+const mctx = mapCanvas.getContext('2d');
+const proj = d3.geoEquirectangular().scale(W/(2*Math.PI)).translate([W/2, H/2]);
+const path = d3.geoPath(proj, mctx);
+const tex = new THREE.CanvasTexture(mapCanvas); tex.anisotropy = 8;
+let countries = [], selected = null;
+
+function drawMap() {
+  mctx.fillStyle = '#0a2a5e'; mctx.fillRect(0, 0, W, H);
+  mctx.strokeStyle = '#ffffff10'; mctx.lineWidth = 1;
+  mctx.beginPath(); path(d3.geoGraticule10()); mctx.stroke();
+  countries.forEach(f => {
+    mctx.beginPath(); path(f);
+    mctx.fillStyle = f === selected ? '#ffb347' : '#2f7d4f';
+    mctx.fill();
+    mctx.strokeStyle = f === selected ? '#fff' : '#bfe8cf';
+    mctx.lineWidth = f === selected ? 2.5 : 0.8; mctx.stroke();
+  });
+  tex.needsUpdate = true;
+}
+drawMap();
+
+const earth = new THREE.Mesh(new THREE.SphereGeometry(1, 96, 64),
+  new THREE.MeshPhongMaterial({map: tex, shininess: 8}));
+scene.add(earth);
+const glow = new THREE.Mesh(new THREE.SphereGeometry(1.03, 64, 48),
+  new THREE.MeshBasicMaterial({color: 0x4aa8ff, transparent: true, opacity: 0.08, side: THREE.BackSide}));
+scene.add(glow);
+
+fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+  .then(r => r.json())
+  .then(t => { countries = topojson.feature(t, t.objects.countries).features; drawMap(); statusEl.textContent = 'map ready'; })
+  .catch(() => statusEl.textContent = 'could not load country data');
+
+function resize() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+// ---------- Selection ----------
+const ray = new THREE.Raycaster();
+function selectAt(sx, sy) {
+  ray.setFromCamera(new THREE.Vector2(sx/innerWidth*2-1, -(sy/innerHeight)*2+1), camera);
+  const hit = ray.intersectObject(earth)[0];
+  if (!hit) { selected = null; labelEl.textContent = ''; drawMap(); return; }
+  const lon = hit.uv.x*360 - 180, lat = hit.uv.y*180 - 90;
+  selected = countries.find(f => d3.geoContains(f, [lon, lat])) || null;
+  labelEl.textContent = selected ? selected.properties.name : 'Ocean';
+  drawMap();
+}
+
+// ---------- Mouse fallback ----------
+let drag = null, moved = 0;
+addEventListener('pointerdown', e => { drag = [e.clientX, e.clientY]; moved = 0; });
+addEventListener('pointermove', e => { if (!drag) return;
+  const dx = e.clientX-drag[0], dy = e.clientY-drag[1]; moved += Math.abs(dx)+Math.abs(dy);
+  spin(dx*0.005, dy*0.005); drag = [e.clientX, e.clientY]; });
+addEventListener('pointerup', e => { if (drag && moved < 5) selectAt(e.clientX, e.clientY); drag = null; });
+addEventListener('wheel', e => { targetZ = THREE.MathUtils.clamp(targetZ + e.deltaY*0.002, 1.4, 7); });
+
+// ---------- Gesture logic ----------
+// Google-Earth-style drag: the globe follows your hand directly (with a little lag),
+// moves slower when zoomed in, and only coasts briefly after you let go.
+const rotTarget = {x: 0, y: 0}, inertia = {x: 0, y: 0};
+let spunThisFrame = false;
+function spin(dx, dy) {
+  const k = THREE.MathUtils.clamp((camera.position.z - 1) / 2.6, 0.25, 2.5);  // zoomed in = slower
+  const ax = dx*k, ay = dy*k;
+  rotTarget.y += ax; rotTarget.x = THREE.MathUtils.clamp(rotTarget.x + ay, -1.2, 1.2);
+  inertia.x += (ax - inertia.x)*0.4; inertia.y += (ay - inertia.y)*0.4;
+  spunThisFrame = true;
+}
+let prevPalm = null, prevHandDist = null, lastClick = 0;
+const d2 = (a, b) => Math.hypot(a.x-b.x, a.y-b.y);
+const isOpen = l => [[8,6],[12,10],[16,14],[20,18]].filter(([t,p]) => d2(l[t], l[0]) > d2(l[p], l[0])*1.1).length >= 3;
+const isPinch = l => d2(l[4], l[8]) / d2(l[0], l[9]) < 0.28;
+
+const ov = $('ov'), octx = ov.getContext('2d');
+function onResults(res) {
+  octx.clearRect(0, 0, 320, 240);
+  const hands = res.multiHandLandmarks || [];
+  hands.forEach(l => { octx.fillStyle = '#7fd1ff'; l.forEach(p => { octx.beginPath(); octx.arc(p.x*320, p.y*240, 2.5, 0, 7); octx.fill(); }); });
+
+  cursorEl.style.display = 'none';
+  if (hands.length >= 2) {                         // ZOOM (two hands)
+    const a = hands[0][9], b = hands[1][9], d = d2(a, b);
+    if (prevHandDist) targetZ = THREE.MathUtils.clamp(targetZ - (d - prevHandDist)*5, 1.4, 7);
+    prevHandDist = d; prevPalm = null; return;
+  }
+  prevHandDist = null;
+  if (hands.length === 1) {
+    const l = hands[0], tip = l[8];
+    const sx = (1 - tip.x)*innerWidth, sy = tip.y*innerHeight;   // mirrored like the preview
+    cursorEl.style.display = 'block'; cursorEl.style.left = sx+'px'; cursorEl.style.top = sy+'px';
+    const pinch = isPinch(l);
+    cursorEl.classList.toggle('down', pinch);
+    if (pinch) {                                   // SELECT
+      prevPalm = null;
+      if (performance.now() - lastClick > 700) { lastClick = performance.now(); selectAt(sx, sy); }
+    } else if (isOpen(l)) {                        // ROTATE
+      const p = {x: 1 - l[9].x, y: l[9].y};
+      if (prevPalm) spin((p.x-prevPalm.x)*3.2, (p.y-prevPalm.y)*3.2);
+      prevPalm = p;
+    } else prevPalm = null;
+  } else prevPalm = null;
+}
+
+// ---------- Render loop ----------
+function loop() {
+  if (!spunThisFrame) {                                   // released: short coast, then stop
+    rotTarget.y += inertia.x; rotTarget.x = THREE.MathUtils.clamp(rotTarget.x + inertia.y, -1.2, 1.2);
+    inertia.x *= 0.88; inertia.y *= 0.88;
+    if (Math.hypot(inertia.x, inertia.y) < 0.0004 && !drag && !prevPalm) rotTarget.y += 0.0008;  // idle spin
+  }
+  spunThisFrame = false;
+  earth.rotation.y += (rotTarget.y - earth.rotation.y)*0.2;   // follow with slight drag
+  earth.rotation.x += (rotTarget.x - earth.rotation.x)*0.2;
+  camera.position.z += (targetZ - camera.position.z)*0.12;
+  glow.rotation.copy(earth.rotation);
+  renderer.render(scene, camera); requestAnimationFrame(loop);
+}
+loop();
+
+// ---------- Start camera ----------
+try {
+  const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`});
+  hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6});
+  hands.onResults(onResults);
+  const cam = new Camera($('vid'), {onFrame: () => hands.send({image: $('vid')}), width: 640, height: 480});
+  cam.start().then(() => statusEl.textContent = 'camera on').catch(e => statusEl.textContent = 'camera blocked: ' + e.message);
+} catch (e) { statusEl.textContent = 'hand tracking failed to load'; }
+</script>
+</body>
+</html>
