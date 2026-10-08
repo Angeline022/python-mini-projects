@@ -32,4 +32,4 @@ The Potentiometer Car Game expects the Arduino to send a whole number from 0 to 
 
 ## Project status
 
-These are small learning projects. The code is shared as it was found, with clearer filenames and setup notes. Hardware behavior depends on the connected Arduino and components. Gesture Earth is a browser project grouped here at the owner's request; it is written in HTML and JavaScript rather than Python.
+These are small learning projects. The code is written through an iterative workflow combining local AI generation with manual code restructuring and error handling. Hardware behavior depends on the connected Arduino and components. Gesture Earth is a browser project grouped here at the owner's request; it is written in HTML and JavaScript rather than Python.
